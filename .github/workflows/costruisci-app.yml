@@ -1,0 +1,59 @@
+# Costruisce l'app "MARK Rilievi" sul Mac gratuito di GitHub e prepara il file .ipa
+# da installare con SideStore. Parte da sola a ogni modifica, oppure a mano (Actions -> Run workflow).
+name: Costruisci app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  costruisci:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepara XcodeGen
+        run: brew install xcodegen
+
+      - name: Crea il progetto Xcode
+        run: xcodegen generate
+
+      - name: Compila (senza firma, la firma la fa SideStore)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AgenteRilievi.xcodeproj \
+            -scheme AgenteRilievi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tee xcodebuild.log | grep -E "error:|warning: .*deprecated|BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/AgenteRilievi.app
+
+      - name: Impacchetta il file .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/AgenteRilievi.app Payload/
+          zip -qr MARK-Rilievi.ipa Payload
+          ls -l MARK-Rilievi.ipa
+
+      - name: Salva il registro della compilazione
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registro
+          path: xcodebuild.log
+
+      - name: Pubblica l'ultima versione (scaricabile dall'iPhone)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Payload/AgenteRilievi.app/Info.plist)
+          gh release delete ultima --yes --cleanup-tag || true
+          gh release create ultima MARK-Rilievi.ipa --title "MARK Rilievi $VER" --notes "Ultima versione costruita il $(date '+%d/%m/%Y %H:%M'). Scarica MARK-Rilievi.ipa dall'iPhone e aprila con SideStore."
