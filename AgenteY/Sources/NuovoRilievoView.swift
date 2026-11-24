@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Tre tocchi: cantiere → unità → fase.
+/// Quattro tocchi: cantiere → unità → fase → tipo di rilievo.
 struct NuovoRilievoView: View {
     @EnvironmentObject var archivio: Archivio
     @Environment(\.dismiss) private var chiudi
@@ -9,6 +9,7 @@ struct NuovoRilievoView: View {
     @State private var passo = 0
     @State private var cantiere: Cantiere?
     @State private var unita: String?
+    @State private var fase: String?
     @State private var nuovoNome = ""
     @State private var chiediNome = false
 
@@ -20,13 +21,14 @@ struct NuovoRilievoView: View {
                     switch passo {
                     case 0: sceltaCantiere
                     case 1: sceltaUnita
-                    default: sceltaFase
+                    case 2: sceltaFase
+                    default: sceltaTipo
                     }
                 }
                 .padding(16)
             }
             .background(Tema.sfondo.ignoresSafeArea())
-            .navigationTitle(["Quale cantiere?", "Quale unità?", "Quale fase?"][min(passo, 2)])
+            .navigationTitle(["Quale cantiere?", "Quale unità?", "Quale fase?", "Cosa rilevi?"][min(passo, 3)])
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -67,10 +69,34 @@ struct NuovoRilievoView: View {
     private var sceltaFase: some View {
         VStack(spacing: 12) {
             ForEach(Fase.allCases) { f in
-                BottoneScelta(titolo: f.rawValue, icona: f.icona) {
-                    guard let c = cantiere, let u = unita else { return }
-                    parti(SceltaRilievo(cantiere: c.nome, cantiereId: c.markId, unita: u, fase: f.rawValue))
+                BottoneScelta(titolo: f.rawValue, icona: f.icona) { fase = f.rawValue; passo = 3 }
+            }
+        }
+    }
+
+    private var sceltaTipo: some View {
+        VStack(spacing: 12) {
+            ForEach(TipoRilievo.allCases) { t in
+                Button {
+                    guard let c = cantiere, let u = unita, let f = fase else { return }
+                    parti(SceltaRilievo(cantiere: c.nome, cantiereId: c.markId, unita: u, fase: f, tipo: t))
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: t.icona).font(.title2).frame(width: 34)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(t.titolo).font(.title3.weight(.semibold))
+                            Text(t.spiegazione).font(.subheadline).foregroundStyle(Tema.testoTenue).multilineTextAlignment(.leading)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(Tema.testoTenue)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, minHeight: 84)
+                    .foregroundStyle(Tema.testo)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .black.opacity(0.05), radius: 4, y: 2)
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -115,7 +141,7 @@ struct Indicatore: View {
     let passo: Int
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(0..<3) { i in
+            ForEach(0..<4) { i in
                 Capsule().fill(i <= passo ? Tema.accento : Color.gray.opacity(0.25)).frame(height: 6)
             }
         }

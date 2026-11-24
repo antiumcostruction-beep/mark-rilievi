@@ -22,7 +22,7 @@ struct ControlliView: View {
                 FumettoTraccia(testo: tuttoOk ? "Tutto pronto. Accendi le luci e apri le porte." : "Controlla qui sotto prima di partire.")
                 Pannello {
                     Text("\(scelta.cantiere) · \(scelta.unita)").font(.headline)
-                    Text(scelta.fase).foregroundStyle(Tema.testoTenue)
+                    Text("\(scelta.fase) · \(scelta.tipo.titolo)").foregroundStyle(Tema.testoTenue)
                 }
                 Pannello {
                     RigaControllo(ok: laserOk, testo: laserOk ? "Laser LiDAR presente" : "Questo telefono non ha il laser LiDAR")

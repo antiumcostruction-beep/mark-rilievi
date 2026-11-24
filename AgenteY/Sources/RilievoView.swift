@@ -16,7 +16,7 @@ struct RilievoView: View {
 
     var body: some View {
         ZStack {
-            CameraView(sessione: motore.sessione.arSession).ignoresSafeArea()
+            CameraView(sessione: motore.arSessione).ignoresSafeArea()
 
             VStack(spacing: 10) {
                 // guida in alto
@@ -32,7 +32,7 @@ struct RilievoView: View {
                 HStack(alignment: .top) {
                     // contatori
                     VStack(alignment: .leading, spacing: 6) {
-                        Etichetta(icona: "square.split.bottomrightquarter", testo: "Stanza \(motore.numeroStanza)")
+                        Etichetta(icona: scelta.tipo.icona, testo: scelta.tipo == .strada ? "Strada / scavo" : "Stanza \(motore.numeroStanza)")
                         Etichetta(icona: "camera", testo: "\(motore.numeroFoto) foto")
                         Etichetta(icona: "circle.grid.3x3", testo: puntiTesto)
                     }
@@ -43,7 +43,8 @@ struct RilievoView: View {
                         .background(.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 14))
                 }
 
-                // barra pareti riprese
+                // barra pareti riprese (solo stanze)
+                if scelta.tipo == .stanze {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Pareti riprese \(Int(motore.copertura * 100))%")
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
@@ -57,6 +58,7 @@ struct RilievoView: View {
                 }
                 .padding(10)
                 .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                }
 
                 Spacer()
 
@@ -71,8 +73,10 @@ struct RilievoView: View {
                     TastoTondo(icona: motore.torciaAccesa ? "flashlight.on.fill" : "flashlight.off.fill", testo: "Torcia") {
                         motore.cambiaTorcia()
                     }
-                    TastoTondo(icona: "arrow.right.square", testo: "Stanza dopo") { motore.stanzaSuccessiva() }
-                        .disabled(motore.fase != .rilievo)
+                    if scelta.tipo == .stanze {
+                        TastoTondo(icona: "arrow.right.square", testo: "Stanza dopo") { motore.stanzaSuccessiva() }
+                            .disabled(motore.fase != .rilievo)
+                    }
                 }
                 BottoneGrande(titolo: "Fine rilievo", icona: "stop.circle.fill", colore: Tema.rosso) {
                     motore.fine { info in fine(info) }

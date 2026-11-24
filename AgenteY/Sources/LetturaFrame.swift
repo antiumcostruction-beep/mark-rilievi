@@ -93,6 +93,42 @@ enum LetturaFrame {
         return out
     }
 
+    /// Punti della maglia 3D visibili nel fotogramma, colorati con la fotocamera (quando la profondità non arriva).
+    static func puntiMagliaColorati(da frame: ARFrame, distanzaMax: Float) -> [PuntoColore] {
+        let immagine = frame.capturedImage
+        CVPixelBufferLockBaseAddress(immagine, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(immagine, .readOnly) }
+        guard CVPixelBufferGetPlaneCount(immagine) >= 2,
+              let baseY = CVPixelBufferGetBaseAddressOfPlane(immagine, 0),
+              let baseC = CVPixelBufferGetBaseAddressOfPlane(immagine, 1) else { return [] }
+        let iw = CVPixelBufferGetWidthOfPlane(immagine, 0), ih = CVPixelBufferGetHeightOfPlane(immagine, 0)
+        let rigaY = CVPixelBufferGetBytesPerRowOfPlane(immagine, 0), rigaC = CVPixelBufferGetBytesPerRowOfPlane(immagine, 1)
+        let mondoInCamera = frame.camera.transform.inverse
+        let K = frame.camera.intrinsics
+        let fx = K.columns.0.x, fy = K.columns.1.y, cx = K.columns.2.x, cy = K.columns.2.y
+        var out: [PuntoColore] = []
+        for case let a as ARMeshAnchor in frame.anchors {
+            let vert = a.geometry.vertices
+            let buf = vert.buffer.contents()
+            for i in 0..<vert.count {
+                let p = buf.advanced(by: vert.offset + vert.stride * i).assumingMemoryBound(to: Float.self)
+                let mondo = a.transform * SIMD4<Float>(p[0], p[1], p[2], 1)
+                let c = mondoInCamera * mondo          // camera ARKit: guarda verso -z, y in alto
+                let d = -c.z
+                if d < 0.15 || d > distanzaMax { continue }
+                let u = fx * c.x / d + cx, v = cy - fy * c.y / d   // pixel nell'immagine del sensore
+                if u < 0 || v < 0 || u >= Float(iw) || v >= Float(ih) { continue }
+                let iu = Int(u), iv = Int(v)
+                let Y = Float(baseY.advanced(by: iv * rigaY + iu).assumingMemoryBound(to: UInt8.self).pointee)
+                let cPtr = baseC.advanced(by: (iv / 2) * rigaC + (iu / 2) * 2).assumingMemoryBound(to: UInt8.self)
+                let cb = Float(cPtr[0]) - 128, cr = Float(cPtr[1]) - 128
+                out.append(PuntoColore(p: SIMD3(mondo.x, mondo.y, mondo.z),
+                                       r: limita(Y + 1.402 * cr), g: limita(Y - 0.344136 * cb - 0.714136 * cr), b: limita(Y + 1.772 * cb)))
+            }
+        }
+        return out
+    }
+
     /// Copia della mappa di profondità (metri, Float32) per misurare sulle foto.
     static func copiaProfondita(da frame: ARFrame) -> (dati: Data, w: Int, h: Int)? {
         guard let sd = frame.sceneDepth ?? frame.smoothedSceneDepth else { return nil }

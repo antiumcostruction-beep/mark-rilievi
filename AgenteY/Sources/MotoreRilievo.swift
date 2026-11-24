@@ -72,6 +72,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     private var frameLetti = 0
     private var maglieViste = 0
     private var arAvviata = false
+    private let strada: Bool
     private var stopVoluto = false
     private var finale = false
     private var annullato = false
@@ -88,6 +89,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         guidaVoce = d.object(forKey: Chiave.voce) as? Bool ?? true
         vibrazione = d.object(forKey: Chiave.vibrazione) as? Bool ?? true
 
+        strada = scelta.tipo == .strada
         nomeCartella = Archivio.nomeCartella(data: inizio, scelta: scelta)
         cartella = Archivio.cartellaRilievi.appendingPathComponent(nomeCartella, isDirectory: true)
         nuvola = Nuvola(lato: qualita.cubetto)
@@ -116,6 +118,13 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             arSessione.run(c)
             arAvviata = true
         }
+        if strada {
+            // Strada / scavo: niente RoomPlan, così la profondità del laser resta accesa
+            inizioStanza = Date()
+            fase = .rilievo
+            guida("Cammina piano, telefono verso terra", ok: true)
+            return
+        }
         var conf = RoomCaptureSession.Configuration()
         conf.isCoachingEnabled = true
         sessione.run(configuration: conf)
@@ -128,7 +137,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
 
     /// Chiude la stanza attuale e passa alla prossima, senza fermare il laser.
     func stanzaSuccessiva() {
-        guard fase == .rilievo else { return }
+        guard fase == .rilievo, !strada else { return }
         fase = .cambioStanza
         stopVoluto = true
         aggiungiMaglia()
@@ -136,7 +145,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     }
 
     func scattaFoto() {
-        guard let f = sessione.arSession.currentFrame else { return }
+        guard let f = arSessione.currentFrame else { return }
         fotografo.scatta(f, manuale: true)
         numeroFoto = fotografo.numero
         if vibrazione { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
@@ -147,6 +156,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         self.completamento = completamento
         finale = true
         if fase == .cambioStanza { return }   // la stanza si sta già chiudendo: salvo dopo
+        if strada { fase = .chiusura; aggiungiMaglia(); salvaTutto(); return }
         fase = .chiusura
         stopVoluto = true
         aggiungiMaglia()
@@ -159,7 +169,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         timer?.invalidate()
         finale = true
         stopVoluto = true
-        sessione.stop()
+        if strada { arSessione.pause() } else { sessione.stop() }
         accendiTorcia(false)
         UIApplication.shared.isIdleTimerDisabled = false
         try? FileManager.default.removeItem(at: cartella)
@@ -168,7 +178,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     // MARK: Lettura continua del laser e della posizione (10 volte al secondo)
 
     private func leggiFrame() {
-        guard fase == .rilievo, let f = sessione.arSession.currentFrame else { return }
+        guard fase == .rilievo, let f = arSessione.currentFrame else { return }
         tick += 1
         let T = f.camera.transform
         let pos = SIMD3<Float>(T.columns.3.x, T.columns.3.y, T.columns.3.z)
@@ -207,7 +217,8 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             let n = f.anchors.reduce(0) { $0 + ($1 is ARMeshAnchor ? 1 : 0) }
             maglieViste = max(maglieViste, n)
             if framePerProfondita < 5, n > 0 {
-                nuvola.aggiungi(LetturaFrame.puntiMaglia(da: f))
+                // solo i punti della maglia che la fotocamera vede adesso, col loro colore vero
+                nuvola.aggiungi(LetturaFrame.puntiMagliaColorati(da: f, distanzaMax: distanzaMax))
                 puntiNuvola = nuvola.conteggio
             }
         }
@@ -225,6 +236,12 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
                 if buioDa == nil { buioDa = Date() }
                 if Date().timeIntervalSince(buioDa!) > 1.5 { accendiTorcia(true) }
             } else { buioDa = nil }
+        }
+
+        if strada {
+            if !tracciamentoOk { guida("Muoviti più piano", ok: false) }
+            else if tick % 10 == 0 { guida("Cammina piano, telefono verso terra", ok: true) }
+            return
         }
 
         // consiglio se dopo un po' non vedo ancora muri
@@ -322,7 +339,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
 
     /// Se il laser non ha dato la profondità, uso la maglia 3D come nuvola.
     private func aggiungiMaglia() {
-        guard framePerProfondita < 5, let f = sessione.arSession.currentFrame else { return }
+        guard framePerProfondita < 5, let f = arSessione.currentFrame else { return }
         nuvola.aggiungi(LetturaFrame.puntiMaglia(da: f))
     }
 
@@ -331,7 +348,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     private func salvaTutto() {
         fase = .salvataggio
         timer?.invalidate()
-        sessione.arSession.pause()
+        arSessione.pause()
         accendiTorcia(false)
         UIApplication.shared.isIdleTimerDisabled = false
         let stanzeCopia = stanze
@@ -365,7 +382,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
 
             let info = RilievoInfo(
                 id: UUID().uuidString, data: inizio,
-                cantiere: scelta.cantiere, cantiereId: scelta.cantiereId, unita: scelta.unita, fase: scelta.fase,
+                cantiere: scelta.cantiere, cantiereId: scelta.cantiereId, unita: scelta.unita, fase: scelta.fase, tipo: scelta.tipo.rawValue,
                 versione: InfoApp.versione, stato: Stato.aspetta,
                 stanze: stanzeCopia.enumerated().map { MotoreRilievo.info(stanza: $1, numero: $0 + 1) },
                 numeroFoto: fotografo.numero,

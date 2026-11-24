@@ -26,6 +26,17 @@ enum Fase: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+/// Che cosa si rileva: stanze (RoomPlan riconosce muri, porte, finestre) oppure strada/scavo (solo laser, nuvola fitta a colori).
+enum TipoRilievo: String, Codable, CaseIterable, Identifiable {
+    case stanze, strada
+    var id: String { rawValue }
+    var titolo: String { self == .stanze ? "Stanze" : "Strada / scavo" }
+    var spiegazione: String {
+        self == .stanze ? "Muri, porte e finestre, con la pianta delle stanze." : "Solo il laser: nuvola fitta con i colori veri. Per strade, scavi, piazzali, tracce a terra."
+    }
+    var icona: String { self == .stanze ? "square.split.bottomrightquarter" : "road.lanes" }
+}
+
 /// Cosa ha scelto l'utente prima di camminare.
 struct SceltaRilievo: Identifiable, Hashable {
     let id = UUID()
@@ -33,6 +44,7 @@ struct SceltaRilievo: Identifiable, Hashable {
     var cantiereId: String? = nil
     var unita: String
     var fase: String
+    var tipo: TipoRilievo = .stanze
 }
 
 /// Una stanza del rilievo, in numeri semplici.
@@ -55,6 +67,7 @@ struct RilievoInfo: Codable, Identifiable, Hashable {
     var cantiereId: String? = nil     // cantiere in MARK, se arrivato da MARK
     var unita: String
     var fase: String
+    var tipo: String? = nil            // "stanze" oppure "strada" (dalla 0.3.0)
     var app: String = "MARK Rilievi"
     var versione: String
     var stato: String                 // "aspetta Wi-Fi" oppure "in MARK"
