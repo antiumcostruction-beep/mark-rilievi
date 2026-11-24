@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject var archivio: Archivio
+    @EnvironmentObject var collegamento: Collegamento
     let inizia: (SceltaRilievo) -> Void
     let apri: (RilievoInfo) -> Void
     @State private var mostraNuovo = false
@@ -15,6 +16,22 @@ struct HomeView: View {
                     FumettoTraccia(testo: saluto)
 
                     BottoneGrande(titolo: "Nuovo rilievo", icona: "camera.viewfinder") { mostraNuovo = true }
+
+                    Pannello {
+                        HStack(spacing: 10) {
+                            Image(systemName: collegamento.abbinato ? "desktopcomputer" : "link.badge.plus")
+                                .foregroundStyle(collegamento.abbinato ? Tema.accento : Tema.casco)
+                            Text(collegamento.stato).font(.subheadline).foregroundStyle(Tema.testo)
+                            Spacer()
+                            if collegamento.lavora { ProgressView() }
+                        }
+                        if !collegamento.abbinato {
+                            Button("Abbina a MARK") { mostraImpostazioni = true }.font(.body.weight(.semibold))
+                        } else if archivio.rilievi.contains(where: { $0.stato == Stato.aspetta }) && !collegamento.lavora {
+                            Button("Manda a MARK ora") { Task { await collegamento.sincronizza(daSolo: false) } }
+                                .font(.body.weight(.semibold))
+                        }
+                    }
 
                     Pannello {
                         Text("Ultimi rilievi").font(.headline).foregroundStyle(Tema.testo)
@@ -37,7 +54,7 @@ struct HomeView: View {
                     Pannello {
                         Text("Cantieri sul telefono").font(.headline).foregroundStyle(Tema.testo)
                         if archivio.cantieri.isEmpty {
-                            Text("Li aggiungi quando fai il primo rilievo. Più avanti arriveranno da MARK sulla Wi-Fi.")
+                            Text("Arrivano da MARK quando sei sulla Wi-Fi dell'ufficio. Puoi anche aggiungerli quando fai un rilievo.")
                                 .foregroundStyle(Tema.testoTenue)
                         }
                         ForEach(archivio.cantieri) { c in
@@ -66,7 +83,7 @@ struct HomeView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { inizia(s) }
                 }
             }
-            .sheet(isPresented: $mostraImpostazioni) { ImpostazioniView() }
+            .sheet(isPresented: $mostraImpostazioni) { ImpostazioniView().environmentObject(collegamento) }
             .alert("Eliminare questo rilievo?", isPresented: Binding(get: { daEliminare != nil }, set: { if !$0 { daEliminare = nil } })) {
                 Button("Elimina", role: .destructive) { if let r = daEliminare { archivio.elimina(rilievo: r) } }
                 Button("Annulla", role: .cancel) {}

@@ -69,7 +69,7 @@ struct NuovoRilievoView: View {
             ForEach(Fase.allCases) { f in
                 BottoneScelta(titolo: f.rawValue, icona: f.icona) {
                     guard let c = cantiere, let u = unita else { return }
-                    parti(SceltaRilievo(cantiere: c.nome, unita: u, fase: f.rawValue))
+                    parti(SceltaRilievo(cantiere: c.nome, cantiereId: c.markId, unita: u, fase: f.rawValue))
                 }
             }
         }

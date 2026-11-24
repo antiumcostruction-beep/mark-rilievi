@@ -24,6 +24,8 @@ enum Chiave {
     static let vibrazione = "vibrazione"
     static let invioAuto = "invioAutomatico"
     static let indirizzoMark = "indirizzoMark"
+    static let gettone = "gettoneMark"
+    static let ultimoIndirizzo = "ultimoIndirizzoMark"
 }
 
 struct ImpostazioniView: View {
@@ -37,6 +39,10 @@ struct ImpostazioniView: View {
     @AppStorage(Chiave.vibrazione) private var vibrazione = true
     @AppStorage(Chiave.invioAuto) private var invioAuto = true
     @AppStorage(Chiave.indirizzoMark) private var indirizzo = ""
+    @EnvironmentObject var collegamento: Collegamento
+    @State private var codice = ""
+    @State private var esito: String?
+    @State private var chiediTogli = false
 
     var body: some View {
         NavigationStack {
@@ -64,6 +70,30 @@ struct ImpostazioniView: View {
                     Toggle("Vibrazione", isOn: $vibrazione)
                 }
                 Section {
+                    if collegamento.abbinato {
+                        Label("Abbinato a MARK", systemImage: "checkmark.circle.fill").foregroundStyle(Tema.ok)
+                        Button("Manda a MARK adesso") { Task { await collegamento.sincronizza(daSolo: false) } }
+                            .disabled(collegamento.lavora)
+                        Button("Togli l'abbinamento", role: .destructive) { chiediTogli = true }
+                    } else {
+                        TextField("Codice di 6 cifre da MARK", text: $codice)
+                            .keyboardType(.numberPad)
+                            .font(.title3.monospacedDigit())
+                        Button {
+                            Task { esito = await collegamento.abbina(codice: codice) ?? "Fatto: telefono abbinato a MARK." }
+                        } label: {
+                            if collegamento.lavora { ProgressView() } else { Text("Abbina a MARK") }
+                        }
+                        .disabled(codice.filter(\.isNumber).count != 6 || collegamento.lavora)
+                    }
+                    Text(collegamento.stato).font(.footnote).foregroundStyle(Tema.testoTenue)
+                } header: {
+                    Text("Collegamento con MARK")
+                } footer: {
+                    Text(collegamento.abbinato ? "Quando sei sulla Wi-Fi dell'ufficio i rilievi partono da soli." :
+                         "Sul PC apri MARK → Rilievi → \"Abbina un telefono\" e scrivi qui il codice. Il telefono deve essere sulla Wi-Fi dell'ufficio.")
+                }
+                Section {
                     Toggle("Invio automatico a MARK", isOn: $invioAuto)
                     TextField("Indirizzo MARK (vuoto = lo trova da solo)", text: $indirizzo)
                         .textInputAutocapitalization(.never)
@@ -72,7 +102,7 @@ struct ImpostazioniView: View {
                 } header: {
                     Text("MARK")
                 } footer: {
-                    Text("L'invio a MARK arriva con la Tappa 3. Per ora i rilievi restano sul telefono, anche nell'app File → Sul mio iPhone → MARK Rilievi.")
+                    Text("Di solito l'indirizzo non serve: il telefono trova MARK da solo. I rilievi restano anche nell'app File → Sul mio iPhone → MARK Rilievi.")
                 }
                 Section {
                     LabeledContent("Versione", value: InfoApp.versione)
@@ -80,6 +110,15 @@ struct ImpostazioniView: View {
             }
             .navigationTitle("Impostazioni")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fatto") { chiudi() } } }
+            .alert(esito ?? "", isPresented: Binding(get: { esito != nil }, set: { if !$0 { esito = nil } })) {
+                Button("OK", role: .cancel) {}
+            }
+            .alert("Togliere l'abbinamento con MARK?", isPresented: $chiediTogli) {
+                Button("Togli", role: .destructive) { collegamento.dimentica() }
+                Button("Annulla", role: .cancel) {}
+            } message: {
+                Text("Per mandare altri rilievi dovrai chiedere un codice nuovo in MARK.")
+            }
         }
     }
 }

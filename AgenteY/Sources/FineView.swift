@@ -45,7 +45,7 @@ struct FineView: View {
                             .font(.footnote).foregroundStyle(Tema.testoTenue)
                     }
                     Pannello {
-                        RigaDato(icona: "camera", testo: "\(rilievo.numeroFoto) foto con profondità")
+                        RigaDato(icona: "camera", testo: "\(rilievo.numeroFoto) foto")
                         RigaDato(icona: "circle.grid.3x3", testo: "\(rilievo.puntiNuvola) punti nella nuvola (\(rilievo.fonteNuvola))")
                         RigaDato(icona: "figure.walk", testo: String(format: "%.0f m camminati in %d min", rilievo.lunghezzaPercorso, max(1, rilievo.durataSecondi / 60)))
                         RigaDato(icona: "wifi", testo: "Stato: \(rilievo.stato)")

@@ -22,6 +22,11 @@ jobs:
       - name: Crea il progetto Xcode
         run: xcodegen generate
 
+      - name: Controllo RoomPlan (per chi sviluppa)
+        run: |
+          F=$(find "$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks/RoomPlan.framework" -name "*.swiftinterface" | head -1)
+          grep -n "arSession\|public init" "$F" | head -40 || true
+
       - name: Compila (senza firma, la firma la fa SideStore)
         run: |
           set -o pipefail

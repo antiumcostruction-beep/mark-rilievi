@@ -33,7 +33,9 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     @Published var torciaAccesa = false
     @Published var errore: String?
 
-    let sessione = RoomCaptureSession()
+    /// Sessione ARKit nostra (con profondità del laser e maglia 3D), passata a RoomPlan.
+    let arSessione = ARSession()
+    let sessione: RoomCaptureSession
     let scelta: SceltaRilievo
     private let inizio = Date()
     private let cartella: URL
@@ -67,6 +69,9 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     private var inizioStanza = Date()
     private var muriVisti = 0
     private var framePerProfondita = 0
+    private var frameLetti = 0
+    private var maglieViste = 0
+    private var arAvviata = false
     private var stopVoluto = false
     private var finale = false
     private var annullato = false
@@ -87,6 +92,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         cartella = Archivio.cartellaRilievi.appendingPathComponent(nomeCartella, isDirectory: true)
         nuvola = Nuvola(lato: qualita.cubetto)
         fotografo = Fotografo(cartella: cartella.appendingPathComponent("foto", isDirectory: true))
+        sessione = RoomCaptureSession(arSession: arSessione)
         super.init()
         sessione.delegate = self
     }
@@ -102,6 +108,14 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     }
 
     private func avviaStanza() {
+        if !arAvviata {
+            // Prima accendo il laser con profondità e maglia 3D: RoomPlan da solo non le dà.
+            let c = ARWorldTrackingConfiguration()
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics.insert(.sceneDepth) }
+            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { c.sceneReconstruction = .mesh }
+            arSessione.run(c)
+            arAvviata = true
+        }
         var conf = RoomCaptureSession.Configuration()
         conf.isCoachingEnabled = true
         sessione.run(configuration: conf)
@@ -181,10 +195,21 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
 
         // nuvola di punti (3 volte al secondo)
         if tracciamentoOk, tick % 3 == 0 {
+            frameLetti += 1
             let punti = LetturaFrame.punti(da: f, passo: qualita.passo, distanzaMax: distanzaMax)
             if !punti.isEmpty { framePerProfondita += 1 }
             nuvola.aggiungi(punti)
             puntiNuvola = nuvola.conteggio
+        }
+
+        // ripiego ogni 3 s: se la profondità non arriva, prendo i punti della maglia 3D
+        if tick % 30 == 0 {
+            let n = f.anchors.reduce(0) { $0 + ($1 is ARMeshAnchor ? 1 : 0) }
+            maglieViste = max(maglieViste, n)
+            if framePerProfondita < 5, n > 0 {
+                nuvola.aggiungi(LetturaFrame.puntiMaglia(da: f))
+                puntiNuvola = nuvola.conteggio
+            }
         }
 
         // foto automatica ogni ~1 m
@@ -314,6 +339,12 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         let durata = Int(Date().timeIntervalSince(inizio))
         let lung = Double(lunghezza)
         let fonte = framePerProfondita >= 5 ? "profondità" : "maglia"
+        let diagnosi = ["frameLetti": "\(frameLetti)", "frameConProfondita": "\(framePerProfondita)", "maglie3D": "\(maglieViste)"]
+        let piantaTratti = trattiChiusi.map { t -> [String: Any] in
+            let tipo: String
+            switch t.tipo { case .muro: tipo = "muro"; case .porta: tipo = "porta"; case .finestra: tipo = "finestra"; case .apertura: tipo = "apertura" }
+            return ["a": [Double(t.a.x), Double(t.a.y)], "b": [Double(t.b.x), Double(t.b.y)], "tipo": tipo]
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             fotografo.attendi()
@@ -326,10 +357,15 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             if let d = try? JSONSerialization.data(withJSONObject: ["formato": "t (s), x, y, z (m)", "punti": percorsoCopia]) {
                 try? d.write(to: cartella.appendingPathComponent("percorso.json"))
             }
+            // pianta semplice per lo Studio Rilievi in MARK (x, z in metri, vista dall'alto)
+            let piantaPercorso = percorsoCopia.map { [Double($0[1]), Double($0[3])] }
+            if let d = try? JSONSerialization.data(withJSONObject: ["formato": 1, "tratti": piantaTratti, "percorso": piantaPercorso]) {
+                try? d.write(to: cartella.appendingPathComponent("pianta.json"))
+            }
 
             let info = RilievoInfo(
                 id: UUID().uuidString, data: inizio,
-                cantiere: scelta.cantiere, unita: scelta.unita, fase: scelta.fase,
+                cantiere: scelta.cantiere, cantiereId: scelta.cantiereId, unita: scelta.unita, fase: scelta.fase,
                 versione: InfoApp.versione, stato: Stato.aspetta,
                 stanze: stanzeCopia.enumerated().map { MotoreRilievo.info(stanza: $1, numero: $0 + 1) },
                 numeroFoto: fotografo.numero,
@@ -337,7 +373,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
                 fonteNuvola: punti == 0 ? "nessuna" : fonte,
                 lunghezzaPercorso: lung,
                 durataSecondi: durata,
-                impostazioni: ["qualita": qualita.rawValue, "distanzaLaser": "\(distanzaMax)", "fotoOgniMetri": "\(fotoMetri)"],
+                impostazioni: ["qualita": qualita.rawValue, "distanzaLaser": "\(distanzaMax)", "fotoOgniMetri": "\(fotoMetri)"].merging(diagnosi) { a, _ in a },
                 cartella: nomeCartella)
             if let d = try? Archivio.codificatore.encode(info) {
                 try? d.write(to: cartella.appendingPathComponent("rilievo.json"), options: .atomic)

@@ -4,6 +4,8 @@ struct Cantiere: Codable, Identifiable, Hashable {
     var id = UUID()
     var nome: String
     var unita: [String] = []
+    var markId: String? = nil      // percorso del cantiere in MARK (es. "ANNO 2026/Via Roma 12")
+    var inCorso: Bool? = nil
 }
 
 enum Fase: String, CaseIterable, Codable, Identifiable {
@@ -28,6 +30,7 @@ enum Fase: String, CaseIterable, Codable, Identifiable {
 struct SceltaRilievo: Identifiable, Hashable {
     let id = UUID()
     var cantiere: String
+    var cantiereId: String? = nil
     var unita: String
     var fase: String
 }
@@ -49,6 +52,7 @@ struct RilievoInfo: Codable, Identifiable, Hashable {
     var formato: Int = 1
     var data: Date
     var cantiere: String
+    var cantiereId: String? = nil     // cantiere in MARK, se arrivato da MARK
     var unita: String
     var fase: String
     var app: String = "MARK Rilievi"
