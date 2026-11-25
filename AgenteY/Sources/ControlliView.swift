@@ -32,6 +32,7 @@ struct ControlliView: View {
                     RigaControllo(ok: nil, testo: "Luci accese (al buio accendo io la torcia)")
                     RigaControllo(ok: nil, testo: "Porte aperte tra le stanze")
                     RigaControllo(ok: nil, testo: "Ricordati il punto di partenza: alla fine torna lì")
+                    RigaControllo(ok: nil, testo: "Per gli spessori di muri e solai: non fermare il rilievo tra una stanza e l'altra e sulle scale")
                 }
                 if laserOk {
                     BottoneGrande(titolo: tuttoOk ? "Inizia a camminare" : "Parto lo stesso", icona: "figure.walk",

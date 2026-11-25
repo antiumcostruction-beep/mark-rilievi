@@ -1,5 +1,6 @@
 import SwiftUI
 import ARKit
+import SceneKit
 
 /// Schermata leggera durante il rilievo: camera, piccola pianta, guida, tasti grandi.
 struct RilievoView: View {
@@ -7,6 +8,7 @@ struct RilievoView: View {
     let fine: (RilievoInfo?) -> Void
     @StateObject private var motore: MotoreRilievo
     @State private var chiediAnnulla = false
+    @State private var chiediFine = false
 
     init(scelta: SceltaRilievo, fine: @escaping (RilievoInfo?) -> Void) {
         self.scelta = scelta
@@ -16,7 +18,7 @@ struct RilievoView: View {
 
     var body: some View {
         ZStack {
-            CameraView(sessione: motore.arSessione).ignoresSafeArea()
+            CameraView(sessione: motore.arSessione, verdi: motore.puntiVerdi, versione: motore.versioneVerdi).ignoresSafeArea()
 
             VStack(spacing: 10) {
                 // guida in alto
@@ -35,10 +37,12 @@ struct RilievoView: View {
                         Etichetta(icona: scelta.tipo.icona, testo: scelta.tipo == .strada ? "Strada / scavo" : "Stanza \(motore.numeroStanza)")
                         Etichetta(icona: "camera", testo: "\(motore.numeroFoto) foto")
                         Etichetta(icona: "circle.grid.3x3", testo: puntiTesto)
+                        Etichetta(icona: "checkmark.seal", testo: "Nuvola fitta \(Int(motore.completezza * 100))%")
                     }
                     Spacer()
                     MiniPianta(tratti: motore.tratti, percorso: motore.percorso,
-                               posizione: motore.posizione, direzione: motore.direzione)
+                               posizione: motore.posizione, direzione: motore.direzione,
+                               copertura: motore.celleCopertura, soglia: motore.sogliaCella)
                         .frame(width: 150, height: 150)
                         .background(.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 14))
                 }
@@ -78,14 +82,27 @@ struct RilievoView: View {
                             .disabled(motore.fase != .rilievo)
                     }
                 }
-                BottoneGrande(titolo: "Fine rilievo", icona: "stop.circle.fill", colore: Tema.rosso) {
-                    motore.fine { info in fine(info) }
+                if motore.fase == .pronto {
+                    BottoneGrande(titolo: "START", icona: "play.circle.fill", colore: Tema.ok) { motore.avvia() }
+                    Text("Mettiti nel punto di partenza, inquadra il pavimento e premi START.")
+                        .font(.footnote).foregroundStyle(.white).shadow(radius: 2)
+                } else {
+                    BottoneGrande(titolo: "Fine rilievo", icona: "stop.circle.fill", colore: Tema.rosso) {
+                        if motore.completezza < 0.6 && motore.puntiNuvola > 0 { chiediFine = true }
+                        else { motore.fine { info in fine(info) } }
+                    }
+                    .disabled(motore.fase != .rilievo && motore.fase != .cambioStanza && motore.fase != .ripasso)
                 }
-                .disabled(motore.fase != .rilievo && motore.fase != .cambioStanza)
-                Text("Consiglio: finisci tornando al punto di partenza.")
-                    .font(.footnote).foregroundStyle(.white).shadow(radius: 2)
+                if motore.fase != .pronto {
+                    Text("Consiglio: finisci tornando al punto di partenza.")
+                        .font(.footnote).foregroundStyle(.white).shadow(radius: 2)
+                }
             }
             .padding(14)
+
+            if motore.fase == .sceltaRipasso {
+                SceltaRipasso(ripassa: { motore.ripassa() }, salva: { motore.salvaSenzaRipasso() })
+            }
 
             if motore.fase == .chiusura || motore.fase == .salvataggio || motore.fase == .cambioStanza {
                 Attesa(testo: motore.fase == .cambioStanza ? "Chiudo la stanza…" : "Salvo il rilievo sul telefono…")
@@ -99,7 +116,11 @@ struct RilievoView: View {
             .padding(.trailing, 14).padding(.top, 2)
             .opacity(0) // nascosto: si annulla con il tasto qui sotto per evitare tocchi per sbaglio
         }
-        .onAppear { motore.avvia() }
+        .onAppear { motore.prepara() }
+        .confirmationDialog("Restano zone poco rilevate (in grigio o arancione sulla piantina).", isPresented: $chiediFine, titleVisibility: .visible) {
+            Button("Ripasso ancora") {}
+            Button("Finisci lo stesso", role: .destructive) { motore.fine { info in fine(info) } }
+        }
         .statusBarHidden()
     }
 
@@ -155,15 +176,66 @@ struct Attesa: View {
     }
 }
 
-/// Mostra la camera della sessione AR, senza 3D pesante sopra.
+/// Scelta dopo le stanze, se il laser non ha dato la nuvola insieme alla pianta.
+struct SceltaRipasso: View {
+    let ripassa: () -> Void
+    let salva: () -> Void
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45).ignoresSafeArea()
+            VStack(spacing: 14) {
+                TracciaView(dimensione: 80)
+                Text("Pianta fatta!").font(.title2.weight(.bold))
+                Text("Per la nuvola nitida, ripassa piano le stanze: muri, porte e finestre restano.")
+                    .multilineTextAlignment(.center).foregroundStyle(Tema.testoTenue)
+                BottoneGrande(titolo: "Ripassa per la nuvola", icona: "arrow.triangle.2.circlepath", colore: Tema.ok, azione: ripassa)
+                Button("Salva così", action: salva).padding(.top, 2)
+            }
+            .padding(22)
+            .background(.white, in: RoundedRectangle(cornerRadius: 18))
+            .padding(20)
+        }
+    }
+}
+
+/// Mostra la camera della sessione AR e, sopra, in verde le zone già rilevate bene.
 struct CameraView: UIViewRepresentable {
     let sessione: ARSession
+    var verdi: [SIMD3<Float>] = []
+    var versione: Int = 0
+
+    final class Coordinatore { var versione = -1; let nodo = SCNNode() }
+    func makeCoordinator() -> Coordinatore { Coordinatore() }
+
     func makeUIView(context: Context) -> ARSCNView {
         let v = ARSCNView(frame: .zero)
         v.session = sessione
         v.automaticallyUpdatesLighting = false
         v.rendersCameraGrain = false
+        v.scene = SCNScene()
+        v.scene.rootNode.addChildNode(context.coordinator.nodo)
         return v
     }
-    func updateUIView(_ uiView: ARSCNView, context: Context) {}
+
+    func updateUIView(_ uiView: ARSCNView, context: Context) {
+        let c = context.coordinator
+        guard c.versione != versione else { return }
+        c.versione = versione
+        guard !verdi.isEmpty else { c.nodo.geometry = nil; return }
+        let vettori = verdi.map { SCNVector3($0.x, $0.y, $0.z) }
+        let sorgente = SCNGeometrySource(vertices: vettori)
+        let indici = (0..<Int32(vettori.count)).map { $0 }
+        let elemento = SCNGeometryElement(indices: indici, primitiveType: .point)
+        elemento.pointSize = 6
+        elemento.minimumPointScreenSpaceRadius = 2
+        elemento.maximumPointScreenSpaceRadius = 6
+        let g = SCNGeometry(sources: [sorgente], elements: [elemento])
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = UIColor(red: 0.17, green: 0.83, blue: 0.42, alpha: 1)
+        m.transparency = 0.55
+        m.writesToDepthBuffer = false
+        g.materials = [m]
+        c.nodo.geometry = g
+    }
 }

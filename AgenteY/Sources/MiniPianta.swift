@@ -7,12 +7,16 @@ struct MiniPianta: View {
     var posizione: CGPoint? = nil
     var direzione: Double = 0
     var spessoreMuro: CGFloat = 3
+    var copertura: [CellaCopertura] = []
+    var soglia: Int = 30
 
     var body: some View {
         Canvas { ctx, size in
             var punti = percorso
             for t in tratti { punti.append(t.a); punti.append(t.b) }
             if let p = posizione { punti.append(p) }
+            let L = CGFloat(Nuvola.lato2D)
+            for c in copertura { punti.append(CGPoint(x: CGFloat(c.i) * L, y: CGFloat(c.k) * L)) }
             guard !punti.isEmpty else { return }
             let minX = punti.map(\.x).min()!, maxX = punti.map(\.x).max()!
             let minY = punti.map(\.y).min()!, maxY = punti.map(\.y).max()!
@@ -23,6 +27,13 @@ struct MiniPianta: View {
             let oy = (size.height - alt * scala) / 2 - minY * scala + (alt - (maxY - minY)) * scala / 2
             func v(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scala + ox, y: p.y * scala + oy) }
 
+            // copertura della nuvola: verde = fitta, arancione = pochi punti
+            for c in copertura {
+                let a = v(CGPoint(x: CGFloat(c.i) * L, y: CGFloat(c.k) * L))
+                let r = CGRect(x: a.x, y: a.y, width: L * scala + 0.5, height: L * scala + 0.5)
+                let col: Color = c.n >= soglia ? Tema.laser.opacity(0.55) : Tema.casco.opacity(0.45)
+                ctx.fill(Path(r), with: .color(col))
+            }
             for t in tratti {
                 var p = Path(); p.move(to: v(t.a)); p.addLine(to: v(t.b))
                 switch t.tipo {

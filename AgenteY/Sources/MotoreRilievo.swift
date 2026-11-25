@@ -16,11 +16,11 @@ struct Tratto {
 /// Il cuore del rilievo: RoomPlan (muri, porte, finestre) + laser (nuvola) + foto + percorso.
 final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegate {
 
-    enum Fase { case pronto, rilievo, cambioStanza, chiusura, salvataggio, finito }
+    enum Fase { case pronto, rilievo, cambioStanza, chiusura, sceltaRipasso, ripasso, salvataggio, finito }
 
     // Quello che vede l'utente
     @Published var fase: Fase = .pronto
-    @Published var messaggio = "Inquadra un angolo col pavimento"
+    @Published var messaggio = "Mettiti nel punto di partenza e premi START"
     @Published var vaBene = true
     @Published var tratti: [Tratto] = []          // stanze già chiuse + stanza attuale
     @Published var percorso: [CGPoint] = []
@@ -32,6 +32,10 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     @Published var puntiNuvola = 0
     @Published var torciaAccesa = false
     @Published var errore: String?
+    @Published var celleCopertura: [CellaCopertura] = []   // pianta della copertura (25 cm)
+    @Published var puntiVerdi: [SIMD3<Float>] = []         // zone già rilevate, mostrate sulla fotocamera
+    @Published var versioneVerdi = 0
+    @Published var completezza: Double = 0                 // 0...1 "Nuvola fitta"
 
     /// Sessione ARKit nostra (con profondità del laser e maglia 3D), passata a RoomPlan.
     let arSessione = ARSession()
@@ -72,7 +76,13 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     private var frameLetti = 0
     private var maglieViste = 0
     private var arAvviata = false
+    private var profonditaForzata = false       // provato a riaccendere il laser insieme a RoomPlan
+    private var momentoForzatura = Date.distantPast
+    private var nonForzare = false
+    private var ripassoFatto = false
+    private var ultimaPosVel: (SIMD3<Float>, Double, Date)?
     private let strada: Bool
+    var sogliaCella: Int { max(6, Int(Nuvola.lato2D * Nuvola.lato2D / (qualita.cubetto * qualita.cubetto) * 0.25)) }
     private var stopVoluto = false
     private var finale = false
     private var annullato = false
@@ -101,23 +111,33 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
 
     // MARK: Comandi
 
+    /// Apre la fotocamera e il laser, ma non registra ancora: aspetta START.
+    func prepara() {
+        guard !arAvviata else { return }
+        UIApplication.shared.isIdleTimerDisabled = true
+        accendiLaser()
+    }
+
+    private func accendiLaser() {
+        let c = ARWorldTrackingConfiguration()
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics.insert(.sceneDepth) }
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { c.sceneReconstruction = .mesh }
+        arSessione.run(c)
+        arAvviata = true
+    }
+
+    /// Tasto START: da qui si registra.
     func avvia() {
         guard fase == .pronto else { return }
         try? FileManager.default.createDirectory(at: cartella, withIntermediateDirectories: true)
         UIApplication.shared.isIdleTimerDisabled = true
+        if vibrazione { UIImpactFeedbackGenerator(style: .heavy).impactOccurred() }
         avviaStanza()
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.leggiFrame() }
     }
 
     private func avviaStanza() {
-        if !arAvviata {
-            // Prima accendo il laser con profondità e maglia 3D: RoomPlan da solo non le dà.
-            let c = ARWorldTrackingConfiguration()
-            if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) { c.frameSemantics.insert(.sceneDepth) }
-            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { c.sceneReconstruction = .mesh }
-            arSessione.run(c)
-            arAvviata = true
-        }
+        if !arAvviata { accendiLaser() }
         if strada {
             // Strada / scavo: niente RoomPlan, così la profondità del laser resta accesa
             inizioStanza = Date()
@@ -133,6 +153,40 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         settori.removeAll()
         copertura = 0
         fase = .rilievo
+        // RoomPlan spegne la profondità del laser: provo a riaccenderla una volta, poco dopo la partenza
+        if !nonForzare && !profonditaForzata {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.riaccendiProfondita() }
+        }
+    }
+
+    private func riaccendiProfondita() {
+        guard fase == .rilievo, !strada, !nonForzare, !profonditaForzata, framePerProfondita == 0,
+              let c = arSessione.configuration as? ARWorldTrackingConfiguration,
+              ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else { return }
+        c.frameSemantics.insert(.sceneDepth)
+        profonditaForzata = true
+        momentoForzatura = Date()
+        arSessione.run(c)
+    }
+
+    /// Ripasso per la nuvola dopo le stanze (se il laser non ha dato la profondità insieme a RoomPlan).
+    func ripassa() {
+        guard fase == .sceltaRipasso else { return }
+        ripassoFatto = true
+        let c = ARWorldTrackingConfiguration()
+        c.frameSemantics.insert(.sceneDepth)
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) { c.sceneReconstruction = .mesh }
+        arSessione.run(c)   // senza azzerare: la nuvola resta allineata alla pianta
+        fase = .ripasso
+        if timer == nil || !(timer!.isValid) {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.leggiFrame() }
+        }
+        guida("Ripassa piano le stanze: ora registro la nuvola", ok: true)
+    }
+
+    func salvaSenzaRipasso() {
+        guard fase == .sceltaRipasso else { return }
+        salvaTutto()
     }
 
     /// Chiude la stanza attuale e passa alla prossima, senza fermare il laser.
@@ -152,15 +206,17 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     }
 
     func fine(_ completamento: @escaping (RilievoInfo?) -> Void) {
-        guard fase == .rilievo || fase == .cambioStanza else { return }
+        guard fase == .rilievo || fase == .cambioStanza || fase == .ripasso else { return }
         self.completamento = completamento
         finale = true
+        if fase == .ripasso { fase = .chiusura; salvaTutto(); return }
         if fase == .cambioStanza { return }   // la stanza si sta già chiudendo: salvo dopo
         if strada { fase = .chiusura; aggiungiMaglia(); salvaTutto(); return }
         fase = .chiusura
         stopVoluto = true
         aggiungiMaglia()
-        sessione.stop()
+        // se il laser non ha dato la nuvola, tengo acceso il sensore per l'eventuale ripasso
+        sessione.stop(pauseARSession: framePerProfondita >= 5)
     }
 
     /// Esce senza salvare (cancella la cartella).
@@ -169,7 +225,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         timer?.invalidate()
         finale = true
         stopVoluto = true
-        if strada { arSessione.pause() } else { sessione.stop() }
+        if strada || fase == .ripasso || fase == .sceltaRipasso { arSessione.pause() } else { sessione.stop() }
         accendiTorcia(false)
         UIApplication.shared.isIdleTimerDisabled = false
         try? FileManager.default.removeItem(at: cartella)
@@ -178,7 +234,8 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     // MARK: Lettura continua del laser e della posizione (10 volte al secondo)
 
     private func leggiFrame() {
-        guard fase == .rilievo, let f = arSessione.currentFrame else { return }
+        guard fase == .rilievo || fase == .ripasso, let f = arSessione.currentFrame else { return }
+        let soloLaser = strada || fase == .ripasso
         tick += 1
         let T = f.camera.transform
         let pos = SIMD3<Float>(T.columns.3.x, T.columns.3.y, T.columns.3.z)
@@ -218,7 +275,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             maglieViste = max(maglieViste, n)
             if framePerProfondita < 5, n > 0 {
                 // solo i punti della maglia che la fotocamera vede adesso, col loro colore vero
-                nuvola.aggiungi(LetturaFrame.puntiMagliaColorati(da: f, distanzaMax: distanzaMax))
+                nuvola.aggiungiMaglia(LetturaFrame.puntiMagliaColorati(da: f, distanzaMax: distanzaMax))
                 puntiNuvola = nuvola.conteggio
             }
         }
@@ -238,16 +295,88 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             } else { buioDa = nil }
         }
 
-        if strada {
-            if !tracciamentoOk { guida("Muoviti più piano", ok: false) }
-            else if tick % 10 == 0 { guida("Cammina piano, telefono verso terra", ok: true) }
-            return
-        }
+        // guida della nuvola, una volta al secondo
+        if tick % 10 == 0 { guidaNuvola(frame: f, pos: pos, avanti: avanti, tracciamentoOk: tracciamentoOk, soloLaser: soloLaser) }
+        if soloLaser { return }
 
         // consiglio se dopo un po' non vedo ancora muri
         if muriVisti == 0, Date().timeIntervalSince(inizioStanza) > 8, vaBene {
             guida("Inquadra l'angolo col pavimento", ok: false)
         }
+    }
+
+    // MARK: Guida della nuvola (dove ripassare)
+
+    private func guidaNuvola(frame f: ARFrame, pos: SIMD3<Float>, avanti: SIMD3<Float>, tracciamentoOk: Bool, soloLaser: Bool) {
+        // velocità di cammino e di rotazione
+        let ora = Date()
+        let yaw = Double(atan2(avanti.x, -avanti.z))
+        var troppoVeloce = false, giraVeloce = false
+        if let u = ultimaPosVel {
+            let (p0, y0, t0) = u
+            let dt = ora.timeIntervalSince(t0)
+            if dt > 0 {
+                troppoVeloce = Double(simd_distance(p0, pos)) / dt > 0.8
+                var dy = abs(yaw - y0); if dy > .pi { dy = 2 * .pi - dy }
+                giraVeloce = dy / dt > 1.2
+            }
+        }
+        ultimaPosVel = (pos, yaw, ora)
+        // distanza al centro dell'inquadratura
+        var lontano = false
+        if let sd = f.sceneDepth ?? f.smoothedSceneDepth {
+            let d = sd.depthMap
+            CVPixelBufferLockBaseAddress(d, .readOnly)
+            if let base = CVPixelBufferGetBaseAddress(d) {
+                let w = CVPixelBufferGetWidth(d), h = CVPixelBufferGetHeight(d), riga = CVPixelBufferGetBytesPerRow(d)
+                let v = base.advanced(by: (h / 2) * riga).assumingMemoryBound(to: Float32.self)[w / 2]
+                lontano = v > distanzaMax
+            }
+            CVPixelBufferUnlockBaseAddress(d, .readOnly)
+        }
+        // fotografia della nuvola, poi la pianta della copertura e i buchi vicini
+        let snap = nuvola.istantanea()
+        puntiVerdi = snap.verdi
+        versioneVerdi += 1
+        celleCopertura = snap.celle
+        let soglia = sogliaCella
+        let mappa = Dictionary(uniqueKeysWithValues: snap.celle.map { (Int64($0.i) << 32 | Int64(UInt32(bitPattern: $0.k)), $0.n) })
+        let fitte = snap.celle.filter { $0.n >= soglia }.count
+        completezza = snap.celle.isEmpty ? 0 : Double(fitte) / Double(snap.celle.count)
+        // buco = cella vicina (entro 3 m) poco fitta, o vuota ma circondata da celle rilevate
+        let ci = Int32((pos.x / Nuvola.lato2D).rounded(.down)), ck = Int32((pos.z / Nuvola.lato2D).rounded(.down))
+        var buco: (Float, Float)? = nil, distMin: Float = .infinity
+        for di in Int32(-12)...12 { for dk in Int32(-12)...12 {
+            let i = ci + di, k = ck + dk
+            let n = mappa[Int64(i) << 32 | Int64(UInt32(bitPattern: k))] ?? 0
+            if n >= soglia { continue }
+            if n == 0 {
+                var vicini = 0
+                for (a, b) in [(1, 0), (-1, 0), (0, 1), (0, -1)] where (mappa[Int64(i + Int32(a)) << 32 | Int64(UInt32(bitPattern: k + Int32(b)))] ?? 0) >= soglia { vicini += 1 }
+                if vicini < 3 { continue }
+            }
+            let x = (Float(i) + 0.5) * Nuvola.lato2D - pos.x, z = (Float(k) + 0.5) * Nuvola.lato2D - pos.z
+            let d = (x * x + z * z).squareRoot()
+            if d > 0.6 && d < 3 && d < distMin { distMin = d; buco = (x, z) }
+        } }
+        if !tracciamentoOk { guida("Muoviti più piano", ok: false); return }
+        if troppoVeloce { guida("Rallenta", ok: false); return }
+        if giraVeloce { guida("Gira più piano", ok: false); return }
+        if lontano { guida("Troppo lontano, avvicinati", ok: false); return }
+        if let bb = buco, Date().timeIntervalSince(inizioStanza) > 6 {
+            let (bx, bz) = bb
+            // direzione del buco rispetto a dove guardo
+            let f2 = SIMD2<Float>(avanti.x, avanti.z), b2 = SIMD2<Float>(bx, bz)
+            let lf = simd_length(f2), lb = simd_length(b2)
+            if lf > 0.2 {
+                let cosA = simd_dot(f2, b2) / (lf * lb)
+                let croce = f2.x * b2.y - f2.y * b2.x       // > 0 = a destra (asse z verso di me)
+                let dove = cosA > 0.7 ? "davanti" : (cosA < -0.5 ? "dietro di te" : (croce > 0 ? "a destra" : "a sinistra"))
+                guida("Manca un pezzo \(dove): ripassa lì", ok: true)
+                return
+            }
+        }
+        if soloLaser { guida(completezza > 0.8 ? "Ottimo, nuvola fitta" : "Cammina piano, telefono verso le superfici", ok: true) }
     }
 
     // MARK: RoomPlan
@@ -284,6 +413,14 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
             let stanza = costruita
             await MainActor.run {
                 if annullato { return }
+                // RoomPlan si è fermato subito dopo aver riacceso la profondità: niente forzatura, riparto la stanza
+                if !voluto && profonditaForzata && Date().timeIntervalSince(momentoForzatura) < 10 && !finale {
+                    nonForzare = true
+                    profonditaForzata = false
+                    accendiLaser()
+                    avviaStanza()
+                    return
+                }
                 if let s = stanza {
                     stanze.append(s)
                     trattiChiusi += MotoreRilievo.tratti(di: s)
@@ -296,6 +433,11 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
                 }
                 if finale {
                     if !voluto { sessione.stop() }
+                    if voluto && framePerProfondita < 5 && !ripassoFatto && !strada {
+                        fase = .sceltaRipasso   // chiedo se ripassare per la nuvola nitida
+                        guida("Pianta fatta. Ripassi per la nuvola?", ok: true)
+                        return
+                    }
                     salvaTutto()
                 } else {
                     numeroStanza += 1
@@ -340,7 +482,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
     /// Se il laser non ha dato la profondità, uso la maglia 3D come nuvola.
     private func aggiungiMaglia() {
         guard framePerProfondita < 5, let f = arSessione.currentFrame else { return }
-        nuvola.aggiungi(LetturaFrame.puntiMaglia(da: f))
+        nuvola.aggiungiMaglia(LetturaFrame.puntiMaglia(da: f))
     }
 
     // MARK: Salvataggio
@@ -356,7 +498,7 @@ final class MotoreRilievo: NSObject, ObservableObject, RoomCaptureSessionDelegat
         let durata = Int(Date().timeIntervalSince(inizio))
         let lung = Double(lunghezza)
         let fonte = framePerProfondita >= 5 ? "profondità" : "maglia"
-        let diagnosi = ["frameLetti": "\(frameLetti)", "frameConProfondita": "\(framePerProfondita)", "maglie3D": "\(maglieViste)"]
+        let diagnosi = ["frameLetti": "\(frameLetti)", "frameConProfondita": "\(framePerProfondita)", "maglie3D": "\(maglieViste)", "profonditaRiaccesa": profonditaForzata ? "si" : (nonForzare ? "rifiutata da RoomPlan" : "no"), "ripasso": ripassoFatto ? "si" : "no", "completezza": "\(Int(completezza * 100))"]
         let piantaTratti = trattiChiusi.map { t -> [String: Any] in
             let tipo: String
             switch t.tipo { case .muro: tipo = "muro"; case .porta: tipo = "porta"; case .finestra: tipo = "finestra"; case .apertura: tipo = "apertura" }
